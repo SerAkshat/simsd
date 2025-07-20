@@ -1,0 +1,336 @@
+generator client {
+    provider = "prisma-client-js"
+    binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+    output = "/home/ubuntu/business_sim_tmp/app/node_modules/.prisma/client"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+// NextAuth models
+model Account {
+    id                String  @id @default(cuid())
+    userId            String
+    type              String
+    provider          String
+    providerAccountId String
+    refresh_token     String? @db.Text
+    access_token      String? @db.Text
+    expires_at        Int?
+    token_type        String?
+    scope             String?
+    id_token          String? @db.Text
+    session_state     String?
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@unique([provider, providerAccountId])
+}
+
+model Session {
+    id           String   @id @default(cuid())
+    sessionToken String   @unique
+    userId       String
+    expires      DateTime
+    user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+    identifier String
+    token      String   @unique
+    expires    DateTime
+
+    @@unique([identifier, token])
+}
+
+// Business Simulation Models
+enum UserRole {
+    ADMIN
+    STUDENT
+}
+
+enum RoundType {
+    INDIVIDUAL
+    GROUP
+    MIX
+}
+
+enum QuestionType {
+    MULTIPLE_CHOICE
+    MULTI_SELECT
+}
+
+model User {
+    id            String    @id @default(cuid())
+    name          String?
+    email         String    @unique
+    password      String?
+    emailVerified DateTime?
+    image         String?
+    role          UserRole  @default(STUDENT)
+    teamId        String?
+    isGroupLeader Boolean   @default(false)
+    individualScore Int     @default(0)
+    isActive      Boolean   @default(true)
+    createdAt     DateTime  @default(now())
+    updatedAt     DateTime  @updatedAt
+
+    // Relations
+    accounts       Account[]
+    sessions       Session[]
+    team           Team?            @relation(fields: [teamId], references: [id])
+    submissions    Submission[]
+    caseFiles      CaseFile[]       // Files uploaded by this user
+    auditLogs      AuditLog[]       // Audit trail for this user
+    bulkOperations BulkOperation[]  // Bulk operations initiated by this user
+
+    @@index([email])
+    @@index([teamId])
+}
+
+model Team {
+    id            String      @id @default(cuid())
+    name          String      @unique
+    gameSessionId String?
+    totalScore    Int         @default(0)
+    isActive      Boolean     @default(true)
+    createdAt     DateTime    @default(now())
+    updatedAt     DateTime    @updatedAt
+
+    // Relations
+    members       User[]
+    gameSession   GameSession? @relation(fields: [gameSessionId], references: [id])
+    submissions   Submission[]
+
+    @@index([gameSessionId])
+}
+
+model GameSession {
+    id            String    @id @default(cuid())
+    name          String    @unique
+    description   String?
+    isActive      Boolean   @default(false)
+    currentRoundId String?
+    maxRounds     Int       @default(1)
+    startedAt     DateTime?
+    endedAt       DateTime?
+    createdAt     DateTime  @default(now())
+    updatedAt     DateTime  @updatedAt
+
+    // Relations
+    teams         Team[]
+    rounds        Round[]
+    currentRound  Round?    @relation("CurrentRound", fields: [currentRoundId], references: [id])
+
+    @@index([isActive])
+}
+
+model Round {
+    id              String      @id @default(cuid())
+    gameSessionId   String
+    roundNumber     Int
+    type            RoundType
+    title           String
+    description     String?
+    timeLimit       Int?        // in minutes
+    isActive        Boolean     @default(false)
+    isCompleted     Boolean     @default(false)
+    startedAt       DateTime?
+    endedAt         DateTime?
+    createdAt       DateTime    @default(now())
+    updatedAt       DateTime    @updatedAt
+
+    // Relations
+    gameSession     GameSession @relation(fields: [gameSessionId], references: [id], onDelete: Cascade)
+    questions       Question[]
+    submissions     Submission[]
+    currentInSession GameSession[] @relation("CurrentRound")
+
+    @@unique([gameSessionId, roundNumber])
+    @@index([gameSessionId])
+    @@index([isActive])
+}
+
+model Question {
+    id                String         @id @default(cuid())
+    roundId           String
+    title             String
+    description       String         @db.Text
+    caseFileUrl       String?
+    caseFileId        String?        // New relation to CaseFile
+    categoryId        String?        // New relation to QuestionCategory
+    questionType      QuestionType   @default(MULTIPLE_CHOICE)
+    minReasoningWords Int            @default(15)
+    order             Int            @default(0)
+    isActive          Boolean        @default(true)
+    createdAt         DateTime       @default(now())
+    updatedAt         DateTime       @updatedAt
+
+    // Relations
+    round             Round                    @relation(fields: [roundId], references: [id], onDelete: Cascade)
+    category          QuestionCategory?        @relation(fields: [categoryId], references: [id])
+    caseFile          CaseFile?               @relation(fields: [caseFileId], references: [id])
+    options           QuestionOption[]
+    submissions       Submission[]
+    tags              QuestionTagRelation[]    // Many-to-many with tags
+
+    @@index([roundId])
+    @@index([categoryId])
+    @@index([caseFileId])
+    @@index([order])
+}
+
+model QuestionOption {
+    id          String   @id @default(cuid())
+    questionId  String
+    text        String
+    points      Int      @default(0)
+    isCorrect   Boolean  @default(false)
+    order       Int      @default(0)
+    createdAt   DateTime @default(now())
+    updatedAt   DateTime @updatedAt
+
+    // Relations
+    question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+    @@index([questionId])
+    @@index([order])
+}
+
+model Submission {
+    id                String    @id @default(cuid())
+    userId            String
+    questionId        String
+    roundId           String
+    teamId            String?
+    selectedOptions   String[]  // Array of option IDs
+    reasoning         String    @db.Text
+    points            Int       @default(0)
+    isGroupSubmission Boolean   @default(false)
+    isIndividualPhase Boolean   @default(false) // For MIX type rounds
+    submittedAt       DateTime  @default(now())
+    updatedAt         DateTime  @updatedAt
+
+    // Relations
+    user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+    question          Question  @relation(fields: [questionId], references: [id], onDelete: Cascade)
+    round             Round     @relation(fields: [roundId], references: [id], onDelete: Cascade)
+    team              Team?     @relation(fields: [teamId], references: [id])
+
+    @@unique([userId, questionId, isGroupSubmission, isIndividualPhase])
+    @@index([userId])
+    @@index([questionId])
+    @@index([roundId])
+    @@index([teamId])
+}
+
+// Enhanced models for better admin features
+model QuestionCategory {
+    id          String     @id @default(cuid())
+    name        String     @unique
+    description String?
+    color       String?    // For UI categorization
+    isActive    Boolean    @default(true)
+    createdAt   DateTime   @default(now())
+    updatedAt   DateTime   @updatedAt
+
+    // Relations
+    questions   Question[]
+
+    @@index([name])
+}
+
+model QuestionTag {
+    id          String              @id @default(cuid())
+    name        String              @unique
+    description String?
+    color       String?
+    createdAt   DateTime            @default(now())
+    updatedAt   DateTime            @updatedAt
+
+    // Relations
+    questions   QuestionTagRelation[]
+
+    @@index([name])
+}
+
+model QuestionTagRelation {
+    id         String      @id @default(cuid())
+    questionId String
+    tagId      String
+    createdAt  DateTime    @default(now())
+
+    // Relations
+    question   Question    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+    tag        QuestionTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+    @@unique([questionId, tagId])
+    @@index([questionId])
+    @@index([tagId])
+}
+
+model CaseFile {
+    id           String     @id @default(cuid())
+    filename     String
+    originalName String
+    filepath     String
+    filesize     Int
+    mimeType     String
+    url          String
+    description  String?
+    isActive     Boolean    @default(true)
+    uploadedBy   String
+    createdAt    DateTime   @default(now())
+    updatedAt    DateTime   @updatedAt
+
+    // Relations
+    uploader     User       @relation(fields: [uploadedBy], references: [id])
+    questions    Question[]
+
+    @@index([uploadedBy])
+    @@index([filename])
+}
+
+model AuditLog {
+    id          String    @id @default(cuid())
+    userId      String
+    action      String    // CREATE, UPDATE, DELETE, LOGIN, etc.
+    entityType  String    // USER, QUESTION, GAME_SESSION, etc.
+    entityId    String?   // ID of the affected entity
+    oldValues   Json?     // Previous values (for updates)
+    newValues   Json?     // New values
+    ipAddress   String?
+    userAgent   String?
+    createdAt   DateTime  @default(now())
+
+    // Relations
+    user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@index([userId])
+    @@index([action])
+    @@index([entityType])
+    @@index([createdAt])
+}
+
+model BulkOperation {
+    id          String       @id @default(cuid())
+    type        String       // IMPORT_USERS, EXPORT_RESULTS, etc.
+    status      String       // PENDING, PROCESSING, COMPLETED, FAILED
+    totalItems  Int          @default(0)
+    processedItems Int       @default(0)
+    failedItems Int          @default(0)
+    resultData  Json?        // Results or error details
+    filename    String?      // Associated file
+    initiatedBy String
+    startedAt   DateTime     @default(now())
+    completedAt DateTime?
+
+    // Relations
+    user        User         @relation(fields: [initiatedBy], references: [id])
+
+    @@index([initiatedBy])
+    @@index([status])
+    @@index([type])
+}
